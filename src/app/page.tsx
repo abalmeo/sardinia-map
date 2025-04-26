@@ -19,21 +19,79 @@ const cities = [
   { name: "Santa Teresa di Gallura", lat: 41.2389, lng: 9.1892, description: "Charming town with stunning sea views" },
 ];
 
-const restaurants = [
-  { name: "Culurgiones", lat: 40.5589, lng: 8.3197, description: "Stuffed pasta with potato, mint, and cheese" },
-  { name: "Porceddu", lat: 39.2238, lng: 9.1217, description: "Traditional roasted suckling pig" },
-  { name: "Fregola", lat: 40.9234, lng: 9.4980, description: "Toasted semolina pasta with seafood" },
-  { name: "Seadas", lat: 41.2389, lng: 9.1892, description: "Fried pastry with cheese and honey" },
-];
+interface Restaurant {
+  name: string;
+  lat: number;
+  lng: number;
+  description: string;
+  placeId: string;
+  rating?: number;
+  photos?: google.maps.places.PlacePhoto[];
+}
 
 export default function SardiniaMap() {
   const mapRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<google.maps.Map | null>(null);
+  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
+  const [restaurantPhotos, setRestaurantPhotos] = useState<{[key: string]: string}>({});
+
+  const searchRestaurants = (service: google.maps.places.PlacesService, location: { lat: number; lng: number }) => {
+    const request = {
+      location: new google.maps.LatLng(location.lat, location.lng),
+      radius: 500, // Search within 500 meters
+      type: 'restaurant',
+      keyword: 'sardinian cuisine'
+    };
+
+    service.nearbySearch(request, (results, status) => {
+      if (status === google.maps.places.PlacesServiceStatus.OK && results) {
+        // Get details for each restaurant
+        results.forEach(place => {
+          if (!place.place_id) return;
+          
+          service.getDetails(
+            {
+              placeId: place.place_id,
+              fields: ['name', 'geometry', 'photos', 'rating', 'reviews', 'formatted_address']
+            },
+            (placeDetails, detailsStatus) => {
+              if (detailsStatus === google.maps.places.PlacesServiceStatus.OK && placeDetails) {
+                const location = placeDetails.geometry?.location;
+                if (!location) return;
+
+                const newRestaurant: Restaurant = {
+                  name: placeDetails.name || '',
+                  lat: location.lat(),
+                  lng: location.lng(),
+                  description: placeDetails.formatted_address || '',
+                  placeId: placeDetails.place_id || '',
+                  rating: placeDetails.rating,
+                  photos: placeDetails.photos
+                };
+
+                setRestaurants(prev => [...prev, newRestaurant]);
+
+                // Store the photo URL if available
+                if (placeDetails.photos && placeDetails.photos.length > 0) {
+                  const photoUrl = placeDetails.photos[0].getUrl({ maxWidth: 400, maxHeight: 300 });
+                  setRestaurantPhotos(prev => ({
+                    ...prev,
+                    [placeDetails.place_id || '']: photoUrl
+                  }));
+                }
+              }
+            }
+          );
+        });
+      }
+    });
+  };
 
   useEffect(() => {
     const loader = new Loader({
       apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
       version: "weekly",
+      libraries: ["places"],
     });
 
     loader.load().then(() => {
@@ -72,7 +130,12 @@ export default function SardiniaMap() {
 
           // Add info window for cities
           const infoWindow = new google.maps.InfoWindow({
-            content: `<div><strong>${location.name}</strong><br>${location.description}</div>`,
+            content: `
+              <div style="padding: 10px;">
+                <h3 style="margin: 0 0 5px 0;">${location.name}</h3>
+                <p style="margin: 0;">${location.description}</p>
+              </div>
+            `,
           });
 
           marker.addListener("click", () => {
@@ -80,32 +143,58 @@ export default function SardiniaMap() {
           });
         });
 
-        // Add restaurant markers
-        restaurants.forEach((location) => {
-          const marker = new google.maps.Marker({
-            position: { lat: location.lat, lng: location.lng },
-            map: mapInstance,
-            title: location.name,
-            icon: {
-              url: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
-              scaledSize: new google.maps.Size(32, 32),
-            },
-          });
+        // Create Places service
+        const service = new google.maps.places.PlacesService(mapInstance);
 
-          // Add info window for restaurants
-          const infoWindow = new google.maps.InfoWindow({
-            content: `<div><strong>${location.name}</strong><br>${location.description}</div>`,
-          });
-
-          marker.addListener("click", () => {
-            infoWindow.open(mapInstance, marker);
-          });
+        // Search for restaurants in each city
+        cities.forEach(city => {
+          searchRestaurants(service, { lat: city.lat, lng: city.lng });
         });
 
         setMap(mapInstance);
       }
     });
   }, []);
+
+  // Add restaurant markers when restaurants are found
+  useEffect(() => {
+    if (map && restaurants.length > 0) {
+      restaurants.forEach((location) => {
+        const marker = new google.maps.Marker({
+          position: { lat: location.lat, lng: location.lng },
+          map: map,
+          title: location.name,
+          icon: {
+            url: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
+            scaledSize: new google.maps.Size(32, 32),
+          },
+        });
+
+        // Add info window for restaurants with image
+        const infoWindow = new google.maps.InfoWindow({
+          content: `
+            <div style="padding: 10px; max-width: 300px;">
+              <h3 style="margin: 0 0 5px 0;">${location.name}</h3>
+              ${restaurantPhotos[location.placeId] ? 
+                `<img src="${restaurantPhotos[location.placeId]}" style="width: 100%; height: 200px; object-fit: cover; border-radius: 4px; margin-bottom: 5px;">` 
+                : ''}
+              <p style="margin: 0 0 5px 0;">${location.description}</p>
+              ${location.rating ? 
+                `<div style="display: flex; align-items: center; gap: 5px;">
+                  <span style="color: #FFB800;">${'★'.repeat(Math.round(location.rating))}${'☆'.repeat(5 - Math.round(location.rating))}</span>
+                  <span>(${location.rating.toFixed(1)})</span>
+                </div>`
+                : ''}
+            </div>
+          `,
+        });
+
+        marker.addListener("click", () => {
+          infoWindow.open(map, marker);
+        });
+      });
+    }
+  }, [map, restaurants, restaurantPhotos]);
 
   return (
     <div className="grid grid-cols-1 gap-4 p-4">
